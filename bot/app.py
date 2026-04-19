@@ -9,6 +9,7 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 API_URL = os.getenv("API_URL", "http://api:8000")
+BOT_API_TIMEOUT = float(os.getenv("BOT_API_TIMEOUT", "45"))
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -29,22 +30,23 @@ async def insult(interaction: discord.Interaction, target: discord.Member):
     await interaction.response.defer()
     name = target.display_name or target.name
     invoker = interaction.user.display_name or interaction.user.name
+    fallback_text = f"{name}, sos tan desastre que hasta el silencio te bardea solo."
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=BOT_API_TIMEOUT) as client:
             r = await client.post(f"{API_URL}/v1/roast", json={"target": name, "invoker": invoker})
             r.raise_for_status()
             data = r.json()
-            # Only post if API returned a text field
             text = data.get("text")
             if text:
                 await interaction.followup.send(text)
             else:
-                # Per rule: bot should not send clarifications or other messages
-                # Do nothing
-                pass
-    except Exception:
-        # Fail silently per rule: bot only posts insults. If generation fails, don't post anything.
-        pass
+                await interaction.followup.send(fallback_text)
+    except Exception as e:
+        print(f"Error calling API: {type(e).__name__}: {e}")
+        try:
+            await interaction.followup.send(fallback_text)
+        except Exception as followup_error:
+            print(f"Error sending followup: {type(followup_error).__name__}: {followup_error}")
 
 
 if __name__ == "__main__":
