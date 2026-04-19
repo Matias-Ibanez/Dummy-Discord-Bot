@@ -24,13 +24,18 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 8GB 
+
 
   ollama-setup:
     image: ollama/ollama:latest
     volumes:
       - ollama_data:/root/.ollama
     entrypoint: /bin/sh
-    command: -c "ollama serve & sleep 5 && ollama pull phi3"
+    command: -c "ollama serve & sleep 5 && ollama pull llama3:8b-instruct-q4_K_M"
     depends_on:
       - ollama
 

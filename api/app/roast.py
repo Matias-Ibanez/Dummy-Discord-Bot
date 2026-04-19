@@ -34,6 +34,8 @@ RIOPLATENSE_MARKERS = (
     "gil",
     "culiado",
     "hdp",
+    'cabeza de pija',
+    'cerra el orto',
 )
 
 AGGRESSIVE_MARKERS = (
@@ -48,7 +50,40 @@ AGGRESSIVE_MARKERS = (
     "fantasma",
     "cara rota",
     "vendehumo",
+    'pija floja'
+    'gordo puto',
+    
 )
+
+POETIC_MARKERS = (
+    "espiritu",
+    "suenos",
+    "ancestros",
+    "paz",
+    "caramba",
+    "alma",
+    "poesia",
+    "metafora",
+    "epico",
+    "vibrante",
+    'callaros'
+)
+
+BANNED_PHRASES = (
+    "siestas",
+    "suenos",
+    "ancestros",
+    "espiritu",
+    "charol",
+    "vibrante",
+    "poesia",
+    "metafora",
+    "alma",
+    "paz",
+)
+
+TAG_RE = re.compile(r"<[^>]+>")
+FENCE_RE = re.compile(r"```[\s\S]*?```")
 
 
 def _parse_ndjson_text(text: str) -> Optional[dict]:
@@ -120,7 +155,45 @@ def _needs_punch_up(text: str) -> bool:
     if not text:
         return True
     lowered = text.lower()
-    return not any(marker in lowered for marker in AGGRESSIVE_MARKERS)
+    lacks_aggressive = not any(marker in lowered for marker in AGGRESSIVE_MARKERS)
+    sounds_poetic = any(marker in lowered for marker in POETIC_MARKERS)
+    return lacks_aggressive or sounds_poetic
+
+
+def _sanitize_roast_output(text: str) -> str:
+    if not text:
+        return ""
+
+    cleaned = text.replace("\r", " ")
+    cleaned = FENCE_RE.sub(" ", cleaned)
+    cleaned = TAG_RE.sub(" ", cleaned)
+
+    lowered = cleaned.lower()
+    if "system-reminder" in lowered:
+        cleaned = cleaned[: lowered.index("system-reminder")]
+
+    # Remove explanatory tails that models often append
+    for stopper in ("note:", "explicacion:", "explanation:"):
+        idx = cleaned.lower().find(stopper)
+        if idx != -1:
+            cleaned = cleaned[:idx]
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _is_bad_output(text: str) -> bool:
+    if not text:
+        return True
+
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in BANNED_PHRASES):
+        return True
+
+    if _needs_argentinization(text) or _needs_punch_up(text):
+        return True
+
+    return False
 
 
 async def call_ollama(
@@ -247,9 +320,11 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
 
     style_boost = (
         "REGLAS FINALES OBLIGATORIAS: Espanol rioplatense puro con voseo, nada de ingles. "
-        "Agresividad 9/10, lenguaje crudo y callejero, sarcasmo filoso. "
+        "Tono de barrio: directo, sucio, agresivo y sin poesia. "
+        "Prohibido romantizar, prohibido metaforas largas, prohibido estilo epico. "
         "Menciona al objetivo por nombre en la primera oracion. "
-        "Maximo 2 oraciones. Sin introducciones, sin explicaciones, sin disculpas."
+        "Maximo 2 oraciones cortas. Sin introducciones, sin explicaciones, sin disculpas. "
+        "Usa puteadas argentinas naturales (ej: boludo, pelotudo, forro, salame, nabo, cabeza de pija, cerra el orto)."
     )
     prompt = GENERATOR_PROMPT + "\n\n" + style_boost + "\n\n" + context
 
@@ -276,18 +351,20 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
             return "No mood to roast right now."
 
     # post-process
+    text = _sanitize_roast_output(text)
     text = _clean_leading(text)
     text = _take_two_sentences(text)
 
-    if _needs_argentinization(text) or _needs_punch_up(text):
+    attempts = 0
+    while _is_bad_output(text) and attempts < 2:
+        attempts += 1
         rewrite_prompt = (
-            "Reescribi este roast para que suene bien argentino y mucho mas agresivo. "
-            "Usa voseo, lunfardo y modismos argentinos naturales. "
-            "Tono: brutal, picante, callejero, sin filtro pero con ingenio. "
-            "Menciona al objetivo por nombre en la primera oracion. "
-            "Maximo 2 oraciones. Prohibido ingles. Prohibido introducciones o explicaciones. "
-            "Texto base:\n"
-            f"{text}\n"
+            "Genera de cero un roast argentino bien agresivo y sin poesia. "
+            "Usa voseo y modismos argentinos reales. "
+            "Menciona al objetivo en la primera oracion. "
+            "Maximo 2 oraciones cortas. Sin metaforas, sin tono literario, sin sentimentalismo. "
+            "Prohibido ingles. Prohibido markdown. Prohibido explicaciones. "
+            "Inclui al menos dos insultos directos de barrio (ej: boludo, pelotudo, forro, salame, nabo, cabeza de pija, cerra el orto). "
             f"Objetivo: {target or invoker or 'el objetivo'}"
         )
         try:
@@ -300,12 +377,13 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
             )
             rewrite_text = _extract_text_from_response(rewrite_data)
             if rewrite_text:
+                rewrite_text = _sanitize_roast_output(rewrite_text)
                 rewrite_text = _clean_leading(rewrite_text)
                 rewrite_text = _take_two_sentences(rewrite_text)
                 if rewrite_text:
                     text = rewrite_text
         except Exception:
-            pass
+            break
 
     if not text:
         return "No mood to roast right now."
