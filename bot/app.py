@@ -1,7 +1,7 @@
 import os
 import httpx
 from dotenv import load_dotenv
-import discord
+import discord # pyright: ignore[reportMissingImports]
 from discord import app_commands
 from discord.ext import commands
 

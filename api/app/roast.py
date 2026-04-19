@@ -11,9 +11,10 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_PATH = os.getenv("OLLAMA_GENERATE_PATH", "/api/generate")
 MODEL = os.getenv("OLLAMA_MODEL", "phi")
 TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "8"))
-GEN_TEMPERATURE = float(os.getenv("OLLAMA_GEN_TEMPERATURE", "0.95"))
-GEN_TOP_P = float(os.getenv("OLLAMA_GEN_TOP_P", "0.9"))
-GEN_REPEAT_PENALTY = float(os.getenv("OLLAMA_GEN_REPEAT_PENALTY", "1.15"))
+GEN_TEMPERATURE = float(os.getenv("OLLAMA_GEN_TEMPERATURE", "1.05"))
+GEN_TOP_P = float(os.getenv("OLLAMA_GEN_TOP_P", "0.92"))
+GEN_REPEAT_PENALTY = float(os.getenv("OLLAMA_GEN_REPEAT_PENALTY", "1.12"))
+GEN_MAX_TOKENS = int(os.getenv("OLLAMA_GEN_MAX_TOKENS", "95"))
 
 ENGLISH_WORDS_RE = re.compile(r"\b(the|and|you|your|with|for|that|this|are|is|it|of|to)\b", re.IGNORECASE)
 RIOPLATENSE_MARKERS = (
@@ -28,8 +29,25 @@ RIOPLATENSE_MARKERS = (
     "vendehumo",
     "sos",
     "tenes",
-    "tenes",
     "laburo",
+    "bardear",
+    "gil",
+    "culiado",
+    "hdp",
+)
+
+AGGRESSIVE_MARKERS = (
+    "boludo",
+    "pelotudo",
+    "forro",
+    "salame",
+    "nabo",
+    "gil",
+    "mamarracho",
+    "payaso",
+    "fantasma",
+    "cara rota",
+    "vendehumo",
 )
 
 
@@ -96,6 +114,13 @@ def _needs_argentinization(text: str) -> bool:
     english_hits = len(ENGLISH_WORDS_RE.findall(lowered))
     has_marker = any(marker in lowered for marker in RIOPLATENSE_MARKERS)
     return english_hits >= 3 or not has_marker
+
+
+def _needs_punch_up(text: str) -> bool:
+    if not text:
+        return True
+    lowered = text.lower()
+    return not any(marker in lowered for marker in AGGRESSIVE_MARKERS)
 
 
 async def call_ollama(
@@ -220,13 +245,19 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
     else:
         context = f'Action: roast\nTarget: "{target or invoker}"'
 
-    prompt = GENERATOR_PROMPT + "\n\n" + context
+    style_boost = (
+        "REGLAS FINALES OBLIGATORIAS: Espanol rioplatense puro con voseo, nada de ingles. "
+        "Agresividad 9/10, lenguaje crudo y callejero, sarcasmo filoso. "
+        "Menciona al objetivo por nombre en la primera oracion. "
+        "Maximo 2 oraciones. Sin introducciones, sin explicaciones, sin disculpas."
+    )
+    prompt = GENERATOR_PROMPT + "\n\n" + style_boost + "\n\n" + context
 
     try:
         data = await call_ollama(
             prompt,
             temperature=GEN_TEMPERATURE,
-            max_tokens=90,
+            max_tokens=GEN_MAX_TOKENS,
             top_p=GEN_TOP_P,
             repeat_penalty=GEN_REPEAT_PENALTY,
         )
@@ -248,11 +279,14 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
     text = _clean_leading(text)
     text = _take_two_sentences(text)
 
-    if _needs_argentinization(text):
+    if _needs_argentinization(text) or _needs_punch_up(text):
         rewrite_prompt = (
-            "Reescribi este roast al espanol rioplatense argentino con voseo y tono callejero. "
-            "Usa modismos argentinos naturales, se directo y filoso, maximo 2 oraciones, "
-            "sin introducciones ni explicaciones. Texto base:\n"
+            "Reescribi este roast para que suene bien argentino y mucho mas agresivo. "
+            "Usa voseo, lunfardo y modismos argentinos naturales. "
+            "Tono: brutal, picante, callejero, sin filtro pero con ingenio. "
+            "Menciona al objetivo por nombre en la primera oracion. "
+            "Maximo 2 oraciones. Prohibido ingles. Prohibido introducciones o explicaciones. "
+            "Texto base:\n"
             f"{text}\n"
             f"Objetivo: {target or invoker or 'el objetivo'}"
         )
@@ -260,7 +294,7 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
             rewrite_data = await call_ollama(
                 rewrite_prompt,
                 temperature=GEN_TEMPERATURE,
-                max_tokens=90,
+                max_tokens=GEN_MAX_TOKENS,
                 top_p=GEN_TOP_P,
                 repeat_penalty=GEN_REPEAT_PENALTY,
             )
