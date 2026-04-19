@@ -1,41 +1,40 @@
-import os
 import json
-import httpx
 import logging
+import os
 import re
 from typing import Optional
-from .utils import extract_json_block, _clean_leading, _take_two_sentences
+
+import httpx
+
 from .prompts import ANALYZER_PROMPT, GENERATOR_PROMPT
+from .utils import _clean_leading, _take_two_sentences, extract_json_block
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_PATH = os.getenv("OLLAMA_GENERATE_PATH", "/api/generate")
 MODEL = os.getenv("OLLAMA_MODEL", "phi")
-TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "8"))
-GEN_TEMPERATURE = float(os.getenv("OLLAMA_GEN_TEMPERATURE", "1.05"))
-GEN_TOP_P = float(os.getenv("OLLAMA_GEN_TOP_P", "0.92"))
-GEN_REPEAT_PENALTY = float(os.getenv("OLLAMA_GEN_REPEAT_PENALTY", "1.12"))
-GEN_MAX_TOKENS = int(os.getenv("OLLAMA_GEN_MAX_TOKENS", "95"))
+TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "70"))
+
+GEN_TEMPERATURE = float(os.getenv("OLLAMA_GEN_TEMPERATURE", "0.9"))
+GEN_TOP_P = float(os.getenv("OLLAMA_GEN_TOP_P", "0.88"))
+GEN_REPEAT_PENALTY = float(os.getenv("OLLAMA_GEN_REPEAT_PENALTY", "1.22"))
+GEN_MAX_TOKENS = int(os.getenv("OLLAMA_GEN_MAX_TOKENS", "90"))
 
 ENGLISH_WORDS_RE = re.compile(r"\b(the|and|you|your|with|for|that|this|are|is|it|of|to)\b", re.IGNORECASE)
+
 RIOPLATENSE_MARKERS = (
     "vos",
     "che",
+    "sos",
+    "tenes",
     "boludo",
     "pelotudo",
     "forro",
-    "nabo",
     "salame",
-    "mamarracho",
-    "vendehumo",
-    "sos",
-    "tenes",
-    "laburo",
+    "nabo",
+    "bardo",
     "bardear",
-    "gil",
-    "culiado",
-    "hdp",
-    'cabeza de pija',
-    'cerra el orto',
+    "cabeza de pija",
+    "cerra el orto",
 )
 
 AGGRESSIVE_MARKERS = (
@@ -45,14 +44,14 @@ AGGRESSIVE_MARKERS = (
     "salame",
     "nabo",
     "gil",
-    "mamarracho",
     "payaso",
     "fantasma",
     "cara rota",
-    "vendehumo",
-    'pija floja'
-    'gordo puto',
-    
+    "cabeza de pija",
+    "cerra el orto",
+    "chota",
+    "puto",
+    "trolo",
 )
 
 POETIC_MARKERS = (
@@ -60,28 +59,24 @@ POETIC_MARKERS = (
     "suenos",
     "ancestros",
     "paz",
-    "caramba",
     "alma",
     "poesia",
     "metafora",
     "epico",
     "vibrante",
-    'callaros'
+    "corazon",
 )
 
 BANNED_PHRASES = (
-    "siestas",
-    "suenos",
-    "ancestros",
-    "espiritu",
-    "charol",
-    "vibrante",
+    "system-reminder",
     "poesia",
     "metafora",
+    "vibrante",
+    "ancestros",
     "alma",
-    "paz",
 )
 
+SYSTEM_REMINDER_BLOCK_RE = re.compile(r"<system-reminder>[\s\S]*?</system-reminder>", re.IGNORECASE)
 TAG_RE = re.compile(r"<[^>]+>")
 FENCE_RE = re.compile(r"```[\s\S]*?```")
 
@@ -141,6 +136,44 @@ def _extract_text_from_response(data: object) -> Optional[str]:
     return None
 
 
+def _sanitize_roast_output(text: str) -> str:
+    if not text:
+        return ""
+
+    cleaned = text.replace("\r", " ")
+    cleaned = SYSTEM_REMINDER_BLOCK_RE.sub(" ", cleaned)
+
+    lower_raw = cleaned.lower()
+    if "<system-reminder>" in lower_raw:
+        cleaned = cleaned[: lower_raw.index("<system-reminder>")]
+
+    cleaned = FENCE_RE.sub(" ", cleaned)
+    cleaned = TAG_RE.sub(" ", cleaned)
+
+    for stopper in ("note:", "explicacion:", "explanation:"):
+        idx = cleaned.lower().find(stopper)
+        if idx != -1:
+            cleaned = cleaned[:idx]
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _ensure_closed_sentence(text: str) -> str:
+    if not text:
+        return ""
+
+    t = text.strip()
+    if t.endswith((".", "!", "?")):
+        return t
+
+    last_end = max(t.rfind("."), t.rfind("!"), t.rfind("?"))
+    if last_end != -1:
+        return t[: last_end + 1].strip()
+
+    return t + "."
+
+
 def _needs_argentinization(text: str) -> bool:
     if not text:
         return True
@@ -154,32 +187,16 @@ def _needs_argentinization(text: str) -> bool:
 def _needs_punch_up(text: str) -> bool:
     if not text:
         return True
+
     lowered = text.lower()
     lacks_aggressive = not any(marker in lowered for marker in AGGRESSIVE_MARKERS)
     sounds_poetic = any(marker in lowered for marker in POETIC_MARKERS)
     return lacks_aggressive or sounds_poetic
 
 
-def _sanitize_roast_output(text: str) -> str:
-    if not text:
-        return ""
-
-    cleaned = text.replace("\r", " ")
-    cleaned = FENCE_RE.sub(" ", cleaned)
-    cleaned = TAG_RE.sub(" ", cleaned)
-
-    lowered = cleaned.lower()
-    if "system-reminder" in lowered:
-        cleaned = cleaned[: lowered.index("system-reminder")]
-
-    # Remove explanatory tails that models often append
-    for stopper in ("note:", "explicacion:", "explanation:"):
-        idx = cleaned.lower().find(stopper)
-        if idx != -1:
-            cleaned = cleaned[:idx]
-
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
+def _has_direct_insult(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in AGGRESSIVE_MARKERS)
 
 
 def _is_bad_output(text: str) -> bool:
@@ -191,6 +208,12 @@ def _is_bad_output(text: str) -> bool:
         return True
 
     if _needs_argentinization(text) or _needs_punch_up(text):
+        return True
+
+    if not _has_direct_insult(text):
+        return True
+
+    if not text.strip().endswith((".", "!", "?")):
         return True
 
     return False
@@ -229,8 +252,8 @@ async def call_ollama(
                 },
             }
 
-            for p in paths_to_try:
-                url = base + p
+            for path in paths_to_try:
+                url = base + path
                 try:
                     resp = await client.post(url, json=payload)
                 except Exception as e:
@@ -238,9 +261,8 @@ async def call_ollama(
                     logging.debug("Failed POST %s (model=%s): %s", url, current_model, e)
                     continue
 
-                # If endpoint not found, try next path.
                 if resp.status_code == 404:
-                    logging.debug("Endpoint %s returned 404, trying next", url)
+                    logging.debug("Endpoint/model not found at %s (model=%s)", url, current_model)
                     continue
 
                 try:
@@ -251,36 +273,28 @@ async def call_ollama(
                     continue
 
                 try:
-                    parsed = resp.json()
-                    logging.info("Ollama %s returned %s with model=%s", url, resp.status_code, current_model)
-                    return parsed
+                    return resp.json()
                 except Exception:
                     ndjson = _parse_ndjson_text(resp.text)
                     if ndjson is not None:
-                        logging.info("Ollama %s returned NDJSON with model=%s", url, current_model)
                         return ndjson
-
-                    logging.info("Ollama %s returned %s; text preview=%.200s", url, resp.status_code, resp.text)
                     return {"result": resp.text}
 
-        # If we get here, all attempts failed
         logging.error("All Ollama endpoint attempts failed; last_exc=%s", last_exc)
         if last_exc:
             raise last_exc
-        raise httpx.HTTPError("No working Ollama endpoint found")
+        raise httpx.HTTPError("No working Ollama endpoint/model found")
 
 
 async def check_ollama_health() -> bool:
     try:
-        # light call
-        await call_ollama("ping", temperature=0.0, max_tokens=1)
+        await call_ollama("ping", temperature=0.0, max_tokens=1, top_p=0.2, repeat_penalty=1.0)
         return True
     except Exception:
         return False
 
 
 async def analyze_request(target: Optional[str], raw: Optional[str], invoker: Optional[str]) -> dict:
-    # Build analyzer input
     context = {"target": target, "raw": raw, "invoker": invoker}
     prompt = ANALYZER_PROMPT + "\n\n" + json.dumps(context)
 
@@ -299,20 +313,20 @@ async def analyze_request(target: Optional[str], raw: Optional[str], invoker: Op
     if not parsed:
         return {"action": "clarify", "target": None, "reason": "no_json"}
 
-    # normalize
     action = parsed.get("action")
     if isinstance(action, str):
         action = action.strip().lower()
         if action == "insult":
             action = "roast"
 
-    target_res = parsed.get("target")
-    reason = parsed.get("reason")
-    return {"action": action or "clarify", "target": target_res, "reason": reason}
+    return {
+        "action": action or "clarify",
+        "target": parsed.get("target"),
+        "reason": parsed.get("reason"),
+    }
 
 
 async def generate_response(action: str, target: Optional[str], raw: Optional[str], invoker: Optional[str]) -> str:
-    # Build generation prompt depending on action
     if action == "respond":
         context = f'Action: respond\nTarget: "{target}"\nOriginal message: "{raw or ""}"'
     else:
@@ -323,8 +337,9 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
         "Tono de barrio: directo, sucio, agresivo y sin poesia. "
         "Prohibido romantizar, prohibido metaforas largas, prohibido estilo epico. "
         "Menciona al objetivo por nombre en la primera oracion. "
-        "Maximo 2 oraciones cortas. Sin introducciones, sin explicaciones, sin disculpas. "
-        "Usa puteadas argentinas naturales (ej: boludo, pelotudo, forro, salame, nabo, cabeza de pija, cerra el orto)."
+        "Maximo 2 oraciones cortas, completas y cerradas con punto o signo final. "
+        "Sin introducciones, sin explicaciones, sin disculpas. "
+        "Usa al menos dos puteadas argentinas de esta lista: boludo, pelotudo, forro, salame, nabo, cabeza de pija, cerra el orto, chota, puto, trolo."
     )
     prompt = GENERATOR_PROMPT + "\n\n" + style_boost + "\n\n" + context
 
@@ -332,7 +347,7 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
         data = await call_ollama(
             prompt,
             temperature=GEN_TEMPERATURE,
-            max_tokens=GEN_MAX_TOKENS,
+            max_tokens=max(GEN_MAX_TOKENS, 80),
             top_p=GEN_TOP_P,
             repeat_penalty=GEN_REPEAT_PENALTY,
         )
@@ -344,46 +359,47 @@ async def generate_response(action: str, target: Optional[str], raw: Optional[st
         text = str(data)
 
     if not text:
-        # fallback to stringify
-        try:
-            text = json.dumps(data)
-        except Exception:
-            return "No mood to roast right now."
+        return "No mood to roast right now."
 
-    # post-process
     text = _sanitize_roast_output(text)
     text = _clean_leading(text)
     text = _take_two_sentences(text)
+    text = _ensure_closed_sentence(text)
 
     attempts = 0
-    while _is_bad_output(text) and attempts < 2:
+    while _is_bad_output(text) and attempts < 3:
         attempts += 1
         rewrite_prompt = (
-            "Genera de cero un roast argentino bien agresivo y sin poesia. "
+            "Genera de cero un roast argentino MUY bardero y agresivo. "
             "Usa voseo y modismos argentinos reales. "
             "Menciona al objetivo en la primera oracion. "
-            "Maximo 2 oraciones cortas. Sin metaforas, sin tono literario, sin sentimentalismo. "
+            "Maximo 2 oraciones cortas, completas y cerradas. "
+            "Sin metaforas, sin tono literario, sin sentimentalismo. "
             "Prohibido ingles. Prohibido markdown. Prohibido explicaciones. "
-            "Inclui al menos dos insultos directos de barrio (ej: boludo, pelotudo, forro, salame, nabo, cabeza de pija, cerra el orto). "
+            "Inclui minimo dos insultos directos de esta lista: boludo, pelotudo, forro, salame, nabo, cabeza de pija, cerra el orto, chota, puto, trolo. "
             f"Objetivo: {target or invoker or 'el objetivo'}"
         )
         try:
             rewrite_data = await call_ollama(
                 rewrite_prompt,
                 temperature=GEN_TEMPERATURE,
-                max_tokens=GEN_MAX_TOKENS,
+                max_tokens=max(GEN_MAX_TOKENS, 80),
                 top_p=GEN_TOP_P,
                 repeat_penalty=GEN_REPEAT_PENALTY,
             )
-            rewrite_text = _extract_text_from_response(rewrite_data)
-            if rewrite_text:
-                rewrite_text = _sanitize_roast_output(rewrite_text)
-                rewrite_text = _clean_leading(rewrite_text)
-                rewrite_text = _take_two_sentences(rewrite_text)
-                if rewrite_text:
-                    text = rewrite_text
         except Exception:
             break
+
+        rewrite_text = _extract_text_from_response(rewrite_data)
+        if not rewrite_text:
+            continue
+
+        rewrite_text = _sanitize_roast_output(rewrite_text)
+        rewrite_text = _clean_leading(rewrite_text)
+        rewrite_text = _take_two_sentences(rewrite_text)
+        rewrite_text = _ensure_closed_sentence(rewrite_text)
+        if rewrite_text:
+            text = rewrite_text
 
     if not text:
         return "No mood to roast right now."
