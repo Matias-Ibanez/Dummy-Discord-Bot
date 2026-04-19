@@ -1,0 +1,39 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/app
+    env_file: 
+      - .env
+    depends_on:
+      ollama-setup:
+        condition: service_completed_successfully
+
+  bot:
+    build: ./bot
+    env_file: 
+      - .env
+    depends_on:
+      - api
+      
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  ollama-setup:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: /bin/sh
+    command: -c "ollama serve & sleep 5 && ollama pull phi3"
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:
+        
